@@ -164,14 +164,26 @@ public abstract class AnnotationUtils {
 	 * @since 4.0
 	 */
 	@SuppressWarnings("unchecked")
+	/**
+	 * 在指定的注解上获取指定类型的某个注解：
+	 * 1、指定注解的类型就是指定类型，返回指定注解本身
+	 * 2、指定注解上标注了指定类型的注解，返回此元注解
+	 * 注意，此方法只支持一级元注解，也就是元注解是直接标注在给定注解上的情况。
+	 * 如果需要支持任意层级，使用find开头的系列方法。
+	 */
 	@Nullable
 	public static <A extends Annotation> A getAnnotation(Annotation annotation, Class<A> annotationType) {
+		// annotation就是要寻找的注解
 		if (annotationType.isInstance(annotation)) {
+			// 对annotation进行加强，使之可以处理标注了AliasFor的情况
 			return synthesizeAnnotation((A) annotation);
 		}
+		// annotation不是要寻找的注解
 		Class<? extends Annotation> annotatedElement = annotation.annotationType();
 		try {
+			// 查找它的直接元注解
 			A metaAnn = annotatedElement.getAnnotation(annotationType);
+			// 对注解进行增强
 			return (metaAnn != null ? synthesizeAnnotation(metaAnn, annotatedElement) : null);
 		}
 		catch (Throwable ex) {
@@ -1552,17 +1564,28 @@ public abstract class AnnotationUtils {
 		return synthesizeAnnotation(annotation, (Object) annotatedElement);
 	}
 
+	/**
+	 * 对传入的annotation进行增强，原理是使用动态代理
+	 * 这么做的目的是为了使其满足AliasFor的语义
+	 * @param annotation 要被包装的注解
+	 * @param annotatedElement 标注了传入的annotation的元素，不为空说明是meta present
+	 */
 	@SuppressWarnings("unchecked")
 	static <A extends Annotation> A synthesizeAnnotation(A annotation, @Nullable Object annotatedElement) {
+		// 如果已经被代理过了
+		// 或者是java标注注解
 		if (annotation instanceof SynthesizedAnnotation || hasPlainJavaAnnotationsOnly(annotatedElement)) {
 			return annotation;
 		}
 
+		// 获取表示这个注解的接口
 		Class<? extends Annotation> annotationType = annotation.annotationType();
+		// 不能合成，直接返回
 		if (!isSynthesizable(annotationType)) {
 			return annotation;
 		}
 
+		// 创建动态代理来保证AliasFor语义
 		DefaultAnnotationAttributeExtractor attributeExtractor =
 				new DefaultAnnotationAttributeExtractor(annotation, annotatedElement);
 		InvocationHandler handler = new SynthesizedAnnotationInvocationHandler(attributeExtractor);
@@ -1764,22 +1787,39 @@ public abstract class AnnotationUtils {
 	 * @see SynthesizedAnnotationInvocationHandler
 	 */
 	@SuppressWarnings("unchecked")
+	/**
+	 * 检测指定类型的注解是否可合成，也就是说是否可以使用动态代理
+	 * 进行包装用以获得标准java语义外的功能，比如说AliasFor
+	 *
+	 * 一个注解是可合成的，指的是：
+	 * 1、此注解内使用了AliasFor注解
+	 * 2、此注解使用到的注解（比如某个方法的返回类型）使用了AliasFor注解
+	 *
+	 * @param annotationType 待检测的注解类型
+	 */
 	private static boolean isSynthesizable(Class<? extends Annotation> annotationType) {
+		// 基本注解不能合成
 		if (hasPlainJavaAnnotationsOnly(annotationType)) {
 			return false;
 		}
 
+		// 读缓存，有的话直接返回
 		Boolean synthesizable = synthesizableCache.get(annotationType);
 		if (synthesizable != null) {
 			return synthesizable;
 		}
 
 		synthesizable = Boolean.FALSE;
+
+		// 遍历注解中定义的方法
 		for (Method attribute : getAttributeMethods(annotationType)) {
+			// 有使用AliasFor注解定义别名
 			if (!getAttributeAliasNames(attribute).isEmpty()) {
 				synthesizable = Boolean.TRUE;
 				break;
 			}
+			// 没有直接使用AliasFor注解
+			// 此时要看看是否有间接使用，比如注解的某个属性返回某个属性，这个返回的注解使用了AliasFor注解
 			Class<?> returnType = attribute.getReturnType();
 			if (Annotation[].class.isAssignableFrom(returnType)) {
 				Class<? extends Annotation> nestedAnnotationType =
@@ -2140,35 +2180,52 @@ public abstract class AnnotationUtils {
 		 * is not annotated with {@code @AliasFor}
 		 * @see #validateAgainst
 		 */
+		/**
+		 * 通过注解内的属性方法创建AliasDescriptor
+		 * @param attribute 注解内的属性方法
+		 */
 		@Nullable
 		public static AliasDescriptor from(Method attribute) {
+			// 读缓存
 			AliasDescriptor descriptor = aliasDescriptorCache.get(attribute);
 			if (descriptor != null) {
 				return descriptor;
 			}
 
+			// 查看一下是否有注解
 			AliasFor aliasFor = attribute.getAnnotation(AliasFor.class);
 			if (aliasFor == null) {
 				return null;
 			}
 
+			// 有的话进行创建并校验
 			descriptor = new AliasDescriptor(attribute, aliasFor);
 			descriptor.validate();
 			aliasDescriptorCache.put(attribute, descriptor);
 			return descriptor;
 		}
 
+		/**
+		 * 创建AliasDescriptor实例
+		 */
 		@SuppressWarnings("unchecked")
 		private AliasDescriptor(Method sourceAttribute, AliasFor aliasFor) {
+			// sourceAttribute是注解中的属性方法，因此declaringClass就是注解的类型
 			Class<?> declaringClass = sourceAttribute.getDeclaringClass();
 
+			// 很容易通过sourceAttribute获取以下几个信息
 			this.sourceAttribute = sourceAttribute;
 			this.sourceAnnotationType = (Class<? extends Annotation>) declaringClass;
 			this.sourceAttributeName = sourceAttribute.getName();
 
+			// 如果没有指定AliasFor的annotation()属性
+			// 那么默认是同一注解内的相互指向，否则使用指定的
 			this.aliasedAnnotationType = (Annotation.class == aliasFor.annotation() ?
 					this.sourceAnnotationType : aliasFor.annotation());
+			// 获取别名
 			this.aliasedAttributeName = getAliasedAttributeName(aliasFor, sourceAttribute);
+			// 不能自己指向自己
+			// 在attributeName相同的情况下，{@link AliasFor#annotation()}必须指向某个元注解
 			if (this.aliasedAnnotationType == this.sourceAnnotationType &&
 					this.aliasedAttributeName.equals(this.sourceAttributeName)) {
 				String msg = String.format("@AliasFor declaration on attribute '%s' in annotation [%s] points to " +
@@ -2177,6 +2234,8 @@ public abstract class AnnotationUtils {
 				throw new AnnotationConfigurationException(msg);
 			}
 			try {
+				// 获取别名属性方法，已经知道了名字和类型，可以通过反射直接获取
+				// 根据java标准，注解内的方法是没有参数的
 				this.aliasedAttribute = this.aliasedAnnotationType.getDeclaredMethod(this.aliasedAttributeName);
 			}
 			catch (NoSuchMethodException ex) {
@@ -2187,10 +2246,17 @@ public abstract class AnnotationUtils {
 				throw new AnnotationConfigurationException(msg, ex);
 			}
 
+			// source和alias类型相同的话表示是同一注解内部的两个属性互相指向
+			// 否则的话说明指定了元注解
 			this.isAliasPair = (this.sourceAnnotationType == this.aliasedAnnotationType);
 		}
 
+		/**
+		 * 校验合法性
+		 */
 		private void validate() {
+			// 如果不是注解内部的互相指向，说明是指向了其它的注解属性
+			// 这种情况下要求其它注解要meta-present在当前注解上
 			// Target annotation is not meta-present?
 			if (!this.isAliasPair && !isAnnotationMetaPresent(this.sourceAnnotationType, this.aliasedAnnotationType)) {
 				String msg = String.format("@AliasFor declaration on attribute '%s' in annotation [%s] declares " +
@@ -2200,6 +2266,8 @@ public abstract class AnnotationUtils {
 				throw new AnnotationConfigurationException(msg);
 			}
 
+			// 如果是注解内部的互相指向，那么相互指向的两个属性都需要标注AliasFor
+			// 比如 AliasFor注解的attribute()和value()
 			if (this.isAliasPair) {
 				AliasFor mirrorAliasFor = this.aliasedAttribute.getAnnotation(AliasFor.class);
 				if (mirrorAliasFor == null) {
@@ -2208,6 +2276,7 @@ public abstract class AnnotationUtils {
 					throw new AnnotationConfigurationException(msg);
 				}
 
+				// 互相指向时，属性名称要能对应上（A指向B，B也要指向A）
 				String mirrorAliasedAttributeName = getAliasedAttributeName(mirrorAliasFor, this.aliasedAttribute);
 				if (!this.sourceAttributeName.equals(mirrorAliasedAttributeName)) {
 					String msg = String.format("Attribute '%s' in annotation [%s] must be declared as an @AliasFor [%s], not [%s].",
@@ -2217,6 +2286,11 @@ public abstract class AnnotationUtils {
 				}
 			}
 
+			// 返回类型必须相同
+			//  1. 完全相同
+			//  2. 如果aliasedReturnType是数组的话，returnType必须和数组元素类型相同
+			// 关于第2点，这是因为注解在书写时，如果是数组类型，并且只有一个元素的话，是可以省略
+			// 花括号的
 			Class<?> returnType = this.sourceAttribute.getReturnType();
 			Class<?> aliasedReturnType = this.aliasedAttribute.getReturnType();
 			if (returnType != aliasedReturnType &&
@@ -2228,11 +2302,14 @@ public abstract class AnnotationUtils {
 				throw new AnnotationConfigurationException(msg);
 			}
 
+			// 如果是相互指向，继续校验默认值
+			// 如果不是相互指向，需要在获取了其它AliasDescriptor后校验
 			if (this.isAliasPair) {
 				validateDefaultValueConfiguration(this.aliasedAttribute);
 			}
 		}
 
+		// 必须定义默认值
 		private void validateDefaultValueConfiguration(Method aliasedAttribute) {
 			Object defaultValue = this.sourceAttribute.getDefaultValue();
 			Object aliasedDefaultValue = aliasedAttribute.getDefaultValue();
@@ -2245,6 +2322,7 @@ public abstract class AnnotationUtils {
 				throw new AnnotationConfigurationException(msg);
 			}
 
+			// 默认值必须相等
 			if (!ObjectUtils.nullSafeEquals(defaultValue, aliasedDefaultValue)) {
 				String msg = String.format("Misconfigured aliases: attribute '%s' in annotation [%s] " +
 						"and attribute '%s' in annotation [%s] must declare the same default value.",
@@ -2285,6 +2363,7 @@ public abstract class AnnotationUtils {
 		 * @see #isOverrideFor
 		 */
 		private boolean isAliasFor(AliasDescriptor otherDescriptor) {
+			// 核心算法是沿着alias链循环比较
 			for (AliasDescriptor lhs = this; lhs != null; lhs = lhs.getAttributeOverrideDescriptor()) {
 				for (AliasDescriptor rhs = otherDescriptor; rhs != null; rhs = rhs.getAttributeOverrideDescriptor()) {
 					if (lhs.aliasedAttribute.equals(rhs.aliasedAttribute)) {
@@ -2295,17 +2374,25 @@ public abstract class AnnotationUtils {
 			return false;
 		}
 
+		// 相互指向，不涉及元注解
 		public List<String> getAttributeAliasNames() {
 			// Explicit alias pair?
+			// aliasedAttributeName就是所有的别名了
+			// 因为同一注解内属性->别名是一对一的，一个属性不会有多个别名，否则通过不了校验
 			if (this.isAliasPair) {
 				return Collections.singletonList(this.aliasedAttributeName);
 			}
 
+			// 不是互相指向，因此是有meta annotation的情况
+			// 遍历其它的AliasDescriptor
 			// Else: search for implicit aliases
 			List<String> aliases = new ArrayList<>();
 			for (AliasDescriptor otherDescriptor : getOtherDescriptors()) {
+				// this和descriptor互为别名
 				if (this.isAliasFor(otherDescriptor)) {
+					// 绝大多数校验都在创建时执行了，除了默认值检验
 					this.validateAgainst(otherDescriptor);
+					// 添加的是sourceAttributeName，也就是注解内的属性名
 					aliases.add(otherDescriptor.sourceAttributeName);
 				}
 			}

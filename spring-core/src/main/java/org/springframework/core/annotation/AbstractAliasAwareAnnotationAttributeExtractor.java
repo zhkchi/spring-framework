@@ -96,6 +96,8 @@ abstract class AbstractAliasAwareAnnotationAttributeExtractor<S> implements Anno
 			for (String aliasName : aliasNames) {
 				Object aliasValue = getRawAttributeValue(aliasName);
 
+				// 存在多个别名的时候，只能设置其中一个的值
+				// 否则的话，就不知道选取哪个作为最终的值了
 				if (!ObjectUtils.nullSafeEquals(attributeValue, aliasValue) &&
 						!ObjectUtils.nullSafeEquals(attributeValue, defaultValue) &&
 						!ObjectUtils.nullSafeEquals(aliasValue, defaultValue)) {
@@ -109,6 +111,8 @@ abstract class AbstractAliasAwareAnnotationAttributeExtractor<S> implements Anno
 
 				// If the user didn't declare the annotation with an explicit value,
 				// use the value of the alias instead.
+				// 如果attributeValue没有设置的话
+				// 让它同步别名的值，这样对外就保持了一致性
 				if (ObjectUtils.nullSafeEquals(attributeValue, defaultValue)) {
 					attributeValue = aliasValue;
 				}

@@ -61,6 +61,9 @@ class SynthesizedAnnotationInvocationHandler implements InvocationHandler {
 
 	@Override
 	public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+		// equals/hashCode/toString/annotationType
+		// 上述四个方法是定义在Annotation接口中的，而所有的
+		// 注解都隐式实现了Annotation接口，因此要特殊处理
 		if (ReflectionUtils.isEqualsMethod(method)) {
 			return annotationEquals(args[0]);
 		}
@@ -73,6 +76,7 @@ class SynthesizedAnnotationInvocationHandler implements InvocationHandler {
 		if (AnnotationUtils.isAnnotationTypeMethod(method)) {
 			return annotationType();
 		}
+		// 除掉Annotation接口中的方法后，剩下的就都是属性方法了
 		if (!AnnotationUtils.isAttributeMethod(method)) {
 			throw new AnnotationConfigurationException(String.format(
 					"Method [%s] is unsupported for synthesized annotation type [%s]", method, annotationType()));
@@ -85,6 +89,7 @@ class SynthesizedAnnotationInvocationHandler implements InvocationHandler {
 	}
 
 	private Object getAttributeValue(Method attributeMethod) {
+		// 代理给attributeExtractor做真正的提取工作
 		String attributeName = attributeMethod.getName();
 		Object value = this.valueCache.get(attributeName);
 		if (value == null) {
@@ -96,6 +101,8 @@ class SynthesizedAnnotationInvocationHandler implements InvocationHandler {
 			}
 
 			// Synthesize nested annotations before returning them.
+			// 如果返回的是另一个注解，尝试包装
+			// 很可能返回的这个注解也有使用AliasFor标注
 			if (value instanceof Annotation) {
 				value = AnnotationUtils.synthesizeAnnotation((Annotation) value, this.attributeExtractor.getAnnotatedElement());
 			}
